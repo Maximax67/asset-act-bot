@@ -380,10 +380,8 @@ def format_pipeline_summary(
 
     if not result.owner_results:
         return (
-            "✅ <b>Генерацію завершено</b>\n\n"
             "ℹ️ Не знайдено підрозділів до генерації.\n\n"
             f"📊 Оброблено рядків: {stats.get('rows_processed', 0)}\n"
-            f"⏭️ Пропущено рядків: {stats.get('rows_skipped', 0)}"
         )
 
     # Header
@@ -402,17 +400,12 @@ def format_pipeline_summary(
 
     lines.append(status_line)
 
-    if result.drive_uploaded:
-        lines.append(f"☁️ Завантажено на Диск: <b>{result.drive_uploaded}</b>")
-
     # Aggregate stats
     lines += [
         "",
         f"📦 Всього позицій: <b>{stats.get('total_items_in_acts', 0)}</b>",
         f"💰 Загальна сума: <b>{fmt_number(total_value)}</b>",
-        "",
         f"📊 Оброблено рядків: {stats.get('rows_processed', 0)}",
-        f"⏭️ Пропущено рядків: {stats.get('rows_skipped', 0)}",
         f"👤 Пропущено підрозділів: {stats.get('owners_skipped', 0)}",
         "",
     ]
