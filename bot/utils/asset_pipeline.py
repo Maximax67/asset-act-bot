@@ -1,4 +1,5 @@
 import asyncio
+from html import escape
 import logging
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -104,13 +105,14 @@ def format_owner_row(r: OwnerResult, chat_id: int = settings.ADMIN_CHAT_ID) -> s
             url = _tg_msg_url(chat_id, r.tg_message_id, r.tg_thread_id)
             links.append(f'<a href="{url}">📨 TG</a>')
 
-        row = f"✅ <code>{r.code}</code>"
+        row = f"✅ <code>{escape(r.code)}</code>"
         if links:
             row += " — " + " | ".join(links)
         return row
+    elif r.error:
+        return f"❌ <code>{escape(r.code)}</code>:\n<code>{escape(r.error[:120])}<code>"
     else:
-        short_err = (r.error or "невідома помилка")[:120]
-        return f"❌ <code>{r.code}</code>:\n<code>{short_err}<code>"
+        return f"❌ <code>{escape(r.code)}</code>: невідома помилка"
 
 
 async def run_asset_generation(

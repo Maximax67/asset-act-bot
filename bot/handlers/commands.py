@@ -1,4 +1,5 @@
 import asyncio
+from html import escape
 import logging
 
 from aiogram import F, Router
@@ -76,7 +77,7 @@ async def generate_asset_handler(message: Message) -> None:
         failed = sum(1 for r in processed if not r.success)
 
         lines = [
-            f"⏳ <b>Обробка підрозділів…</b>",
+            "⏳ <b>Обробка підрозділів…</b>",
             f"✅ Успішно: {done}   ❌ Помилок: {failed}",
             "",
         ]
@@ -108,12 +109,12 @@ async def generate_asset_handler(message: Message) -> None:
                 f"Generation complete: {pipeline_result.successful}/{pipeline_result.total} owners succeeded"
             )
         except RuntimeError as exc:
-            text = f"❌ <b>Помилка конфігурації або API</b>\n\n<code>{exc}</code>"
-            logger.error(f"Runtime error: {exc}")
+            text = f"❌ <b>Помилка конфігурації або API</b>\n\n<code>{escape(str(exc))[:120]}</code>"
+            logger.exception(exc)
             await status_msg.edit_text(text)
         except Exception as exc:
-            text = f"❌ <b>Непередбачувана помилка</b>\n\n<code>{exc}</code>"
-            logger.exception(f"Unhandled exception in generation pipeline: {exc}")
+            text = f"❌ <b>Непередбачувана помилка</b>\n\n<code>{escape(str(exc))[:120]}</code>"
+            logger.exception(exc)
             await status_msg.edit_text(text)
 
 

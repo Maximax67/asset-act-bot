@@ -157,5 +157,5 @@ curl -X POST https://your-app.vercel.app/webhook/delete \
 | Command | Description |
 | --- | --- |
 | `/generate_asset` | Run the full generation pipeline |
-| `/help` | Show help and template variable reference |
+| `/help` | Show help |
 | `/start` | Welcome message |
