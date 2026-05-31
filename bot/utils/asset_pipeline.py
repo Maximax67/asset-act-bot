@@ -110,7 +110,7 @@ def format_owner_row(r: OwnerResult, chat_id: int = settings.ADMIN_CHAT_ID) -> s
             row += " — " + ", ".join(links)
         return row
     elif r.error:
-        return f"❌ <code>{escape(r.code)}</code>:\n<code>{escape(r.error[:120])}<code>"
+        return f"❌ <code>{escape(r.code)}</code>:\n<code>{escape(r.error[:120])}</code>"
     else:
         return f"❌ <code>{escape(r.code)}</code>: невідома помилка"
 
