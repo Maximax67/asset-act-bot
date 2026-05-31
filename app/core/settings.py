@@ -35,13 +35,15 @@ class Settings(BaseSettings):
     CURRENCY_SUFFIX: str = ""
     ALLOW_ROUNDING_ADJUST: bool = True
 
+    # Maximum seconds the generation pipeline may run; 0 = no limit
+    EXECUTION_MAX_TIME: int = 300
+
     APP_TITLE: str = "Asset Act Bot"
     APP_VERSION: str = "1.0.0"
 
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        # Allow extra env vars without raising validation errors
         extra="ignore",
     )
 

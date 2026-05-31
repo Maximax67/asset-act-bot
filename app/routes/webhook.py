@@ -6,7 +6,7 @@ POST /webhook/delete   – remove the webhook from Telegram (admin only)
 """
 
 from aiogram.types import Update
-from fastapi import APIRouter, Header, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, Response
 
 from app.core.logger import logger
 from app.core.settings import settings
@@ -16,12 +16,31 @@ from bot.instance import bot
 router = APIRouter(prefix="/webhook", tags=["telegram"])
 
 
+async def _run_update(update: Update) -> None:
+    """Feed a Telegram update to the dispatcher inside a background task.
+
+    Exceptions are caught and logged rather than propagated, because by the
+    time this runs the 200 response has already been sent to Telegram.
+    """
+    try:
+        await dp.feed_update(bot, update)
+    except Exception as exc:
+        logger.error(f"Dispatcher error while processing update: {exc}")
+
+
 @router.post("")
 async def handle_webhook(
     request: Request,
+    background_tasks: BackgroundTasks,
     x_telegram_token: str = Header(..., alias="X-Telegram-Bot-Api-Secret-Token"),
 ) -> Response:
-    """Receive an update from Telegram and feed it to the dispatcher."""
+    """Receive a Telegram update, acknowledge it immediately, and process in background.
+
+    Returning 200 before any heavy work prevents Telegram from retrying the
+    update while the (potentially long-running) generation pipeline is still
+    executing.  Vercel keeps the function alive until the ASGI background task
+    completes or the configured function timeout is reached.
+    """
     if (
         settings.WEBHOOK_SECRET
         and x_telegram_token != settings.WEBHOOK_SECRET.get_secret_value()
@@ -36,11 +55,7 @@ async def handle_webhook(
         logger.error(f"Failed to parse Telegram update: {exc}")
         raise HTTPException(status_code=400, detail="Invalid update payload")
 
-    try:
-        await dp.feed_update(bot, update)
-    except Exception as exc:
-        logger.error(f"Dispatcher error while processing update: {exc}")
-        # Always return 200 so Telegram does not retry the same update
+    background_tasks.add_task(_run_update, update)
     return Response(status_code=200)
 
 

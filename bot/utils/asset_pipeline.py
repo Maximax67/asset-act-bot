@@ -1,4 +1,5 @@
 import asyncio
+import time
 from html import escape
 import logging
 from dataclasses import dataclass, field
@@ -21,6 +22,10 @@ from bot.utils.google_sheets import (
 from bot.utils.template_vars import build_variables_for_owner
 
 logger = logging.getLogger(__name__)
+
+# When fewer than this many seconds remain before the deadline, stop starting
+# new owners and mark the rest as timed-out instead.
+TIMEOUT_SAFETY_MARGIN = 30
 
 
 @dataclass
@@ -46,6 +51,7 @@ class PipelineResult:
 
     owner_results: list[OwnerResult]
     stats: dict[str, Any]
+    timed_out: bool = False
 
     @property
     def total(self) -> int:
@@ -83,17 +89,7 @@ def _tg_msg_url(chat_id: int, message_id: int, thread_id: Optional[int] = None) 
 
 
 def format_owner_row(r: OwnerResult, chat_id: int = settings.ADMIN_CHAT_ID) -> str:
-    """Format a single :class:`OwnerResult` as 1–2 lines of Telegram HTML.
-
-    Successful row example::
-
-        ✅ <СР КПІ> — Диск, Телеграм
-
-    Failed row example::
-
-        ❌ <СР КПІ>
-        Doc API HTTP 400: …
-    """
+    """Format a single :class:`OwnerResult` as 1–2 lines of Telegram HTML."""
 
     if r.success:
         links: list[str] = []
@@ -110,7 +106,9 @@ def format_owner_row(r: OwnerResult, chat_id: int = settings.ADMIN_CHAT_ID) -> s
             row += " — " + ", ".join(links)
         return row
     elif r.error:
-        return f"❌ <code>{escape(r.code)}</code>:\n<code>{escape(r.error[:120])}</code>"
+        return (
+            f"❌ <code>{escape(r.code)}</code>:\n<code>{escape(r.error[:120])}</code>"
+        )
     else:
         return f"❌ <code>{escape(r.code)}</code>: невідома помилка"
 
@@ -127,11 +125,17 @@ async def run_asset_generation(
     4. Load departments (thread)
     5. Parse assets from the Assets sheet (thread)
     6. For each owner:
-       a. Build template variables
-       b. Call document generator API (async HTTP)
-       c. Send document via Telegram
-       d. Upload to Google Drive (thread)
-       e. Invoke on_progress callback
+       a. Check remaining time — skip with timeout error if budget is exhausted
+       b. Build template variables
+       c. Call document generator API (async HTTP)
+       d. Send document via Telegram
+       e. Upload to Google Drive (thread)
+       f. Invoke on_progress callback
+
+    Respects ``EXECUTION_MAX_TIME``: when fewer than ``TIMEOUT_SAFETY_MARGIN``
+    seconds remain, all pending owners are recorded as failed with a timeout
+    message and the pipeline exits cleanly.  Set ``EXECUTION_MAX_TIME=0`` to
+    disable the limit entirely.
 
     Args:
         on_progress: Optional async callable invoked after every owner is
@@ -142,8 +146,11 @@ async def run_asset_generation(
         PipelineResult containing per-owner results and aggregate statistics.
 
     Raises:
-        RuntimeError: if Google API setup or spreadsheet verification fails
+        RuntimeError: if Google API setup or spreadsheet verification fails.
     """
+    started_at = time.monotonic()
+    max_time = settings.EXECUTION_MAX_TIME  # 0 means no limit
+
     logger.info("Asset generation pipeline starting")
 
     sheets_svc, drive_svc = await asyncio.to_thread(build_google_services)
@@ -178,9 +185,41 @@ async def run_asset_generation(
 
     logger.info(f"Generating documents for {len(per_owner)} owner(s)")
 
+    owner_items = list(per_owner.items())
     results: list[OwnerResult] = []
+    timed_out = False
 
-    for code, data in per_owner.items():
+    for i, (code, data) in enumerate(owner_items):
+        if max_time > 0:
+            elapsed = time.monotonic() - started_at
+            remaining = max_time - elapsed
+            if remaining < TIMEOUT_SAFETY_MARGIN:
+                timed_out = True
+                remaining_owners = owner_items[i:]
+                logger.warning(
+                    f"Approaching execution limit ({remaining:.1f}s remaining). "
+                    f"Skipping {len(remaining_owners)} owner(s): "
+                    + ", ".join(c for c, _ in remaining_owners)
+                )
+                for skip_code, skip_data in remaining_owners:
+                    skip_dept = skip_data.get("dept", {})
+                    skip_file = generate_file_name(skip_dept.get("code", skip_code))
+                    skip_result = OwnerResult(
+                        code=skip_code,
+                        file_name=skip_file,
+                        success=False,
+                        items_count=len(skip_data.get("items", [])),
+                        total_sum=skip_data.get("tot_sum", Decimal("0.00")),
+                        error="Пропущено: вичерпано час виконання",
+                    )
+                    results.append(skip_result)
+                    if on_progress:
+                        try:
+                            await on_progress(skip_result)
+                        except Exception as cb_exc:
+                            logger.warning(f"Progress callback raised: {cb_exc}")
+                break  # exit the main owner loop
+
         result = await _process_single_owner(code, data, drive_svc)
         results.append(result)
 
@@ -190,13 +229,17 @@ async def run_asset_generation(
             except Exception as cb_exc:
                 logger.warning(f"Progress callback raised an exception: {cb_exc}")
 
-    pipeline_result = PipelineResult(owner_results=results, stats=stats)
+    pipeline_result = PipelineResult(
+        owner_results=results, stats=stats, timed_out=timed_out
+    )
+    elapsed_total = time.monotonic() - started_at
     logger.info(
         f"Pipeline complete — owners: {pipeline_result.successful} ok / "
         f"{pipeline_result.failed} failed / {pipeline_result.total} total | "
         f"rows_processed={stats.get('rows_processed', 0)} | "
         f"total_items={stats.get('total_items_in_acts', 0)} | "
-        f"total_value={fmt_number(stats.get('total_value_generated', Decimal('0')))}"
+        f"total_value={fmt_number(stats.get('total_value_generated', Decimal('0')))} | "
+        f"elapsed={elapsed_total:.1f}s" + (" | TIMED OUT" if timed_out else "")
     )
 
     return pipeline_result
@@ -222,7 +265,7 @@ async def _process_single_owner(
         f"sum={fmt_number(total_sum)}, file='{file_name}'"
     )
 
-    # --- Build template variables (pure, sync, cheap) ---
+    # Build template variables (pure, sync, cheap)
     try:
         variables = build_variables_for_owner(data, dept)
     except Exception as exc:
@@ -236,7 +279,7 @@ async def _process_single_owner(
             error=f"Variable build error: {exc}",
         )
 
-    # --- Call document generator API (async HTTP) ---
+    # Call document generator API (async HTTP)
     try:
         doc_bytes, extension = await generate_document(variables)
         logger.info(
@@ -264,7 +307,7 @@ async def _process_single_owner(
             error=f"Network/API error: {exc}",
         )
 
-    # --- Send document via Telegram ---
+    # Send document via Telegram
     tg_message_id: Optional[int] = None
     tg_thread_id: Optional[int] = None
     try:
@@ -287,7 +330,7 @@ async def _process_single_owner(
             error=f"Telegram upload error: {exc}",
         )
 
-    # --- Upload to Google Drive (sync → thread) ---
+    # Upload to Google Drive (sync → thread)
     drive_file_id: Optional[str] = None
     drive_skipped = False
 
@@ -331,11 +374,7 @@ def format_pipeline_summary(
     result: PipelineResult,
     chat_id: int = settings.ADMIN_CHAT_ID,
 ) -> str:
-    """Return a Telegram HTML message summarising the pipeline outcome.
-
-    Shows aggregate stats followed by one row per owner (success and failure),
-    using the same :func:`format_owner_row` format as the live progress view.
-    """
+    """Return a Telegram HTML message summarising the pipeline outcome."""
     stats = result.stats
     total_value: Decimal = stats.get("total_value_generated", Decimal("0.00"))
 
@@ -347,21 +386,26 @@ def format_pipeline_summary(
             f"⏭️ Пропущено рядків: {stats.get('rows_skipped', 0)}"
         )
 
-    # --- Header ---
+    # Header
     status_line = f"✅ Успішно: <b>{result.successful} / {result.total}</b>"
     if result.failed:
         status_line += f"   ❌ Помилок: <b>{result.failed} / {result.total}</b>"
 
-    lines: list[str] = [
-        "📋 <b>Генерацію завершено</b>",
-        "",
-        status_line,
-    ]
+    lines: list[str] = ["📋 <b>Генерацію завершено</b>", ""]
+
+    if result.timed_out:
+        lines.append("⚠️ <b>Виконання перервано через обмеження часу!</b>")
+        lines.append(
+            f"ℹ️ Не всі акти згенеровано — досягнуто ліміту {settings.EXECUTION_MAX_TIME} с."
+        )
+        lines.append("")
+
+    lines.append(status_line)
 
     if result.drive_uploaded:
         lines.append(f"☁️ Завантажено на Диск: <b>{result.drive_uploaded}</b>")
 
-    # --- Aggregate stats ---
+    # Aggregate stats
     lines += [
         "",
         f"📦 Всього позицій: <b>{stats.get('total_items_in_acts', 0)}</b>",
@@ -373,12 +417,12 @@ def format_pipeline_summary(
         "",
     ]
 
-    # --- Per-owner rows (all results, success and failure) ---
+    # Per-owner rows (all results, success and failure)
     for r in result.owner_results:
         lines.append(format_owner_row(r, chat_id))
 
     text = "\n".join(lines)
-    # Telegram message cap is 4096 chars; trim gracefully
     if len(text) > 4000:
         text = text[:3990] + "\n\n…<i>(обрізано)</i>"
+
     return text

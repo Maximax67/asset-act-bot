@@ -74,6 +74,7 @@ python run_polling.py
 | `DECIMAL_SEPARATOR` | | `,` | Decimal separator |
 | `CURRENCY_SUFFIX` | | — | Appended to formatted amounts |
 | `ALLOW_ROUNDING_ADJUST` | | `true` | Auto-fix rounding on last owner |
+| `EXECUTION_MAX_TIME` | | `300` | Pipeline timeout in seconds; `0` disables the limit |
 
 ## Google Sheets Layout
 
