@@ -87,7 +87,7 @@ def format_owner_row(r: OwnerResult, chat_id: int = settings.ADMIN_CHAT_ID) -> s
 
     Successful row example::
 
-        ✅ <СР КПІ> — ☁️ Диск | 📨 TG
+        ✅ <СР КПІ> — Диск, Телеграм
 
     Failed row example::
 
@@ -99,15 +99,15 @@ def format_owner_row(r: OwnerResult, chat_id: int = settings.ADMIN_CHAT_ID) -> s
         links: list[str] = []
         if r.drive_file_id:
             links.append(
-                f'<a href="https://drive.google.com/file/d/{r.drive_file_id}">☁️ Диск</a>'
+                f'<a href="https://drive.google.com/file/d/{r.drive_file_id}">Диск</a>'
             )
         if r.tg_message_id:
             url = _tg_msg_url(chat_id, r.tg_message_id, r.tg_thread_id)
-            links.append(f'<a href="{url}">📨 TG</a>')
+            links.append(f'<a href="{url}">Телеграм</a>')
 
         row = f"✅ <code>{escape(r.code)}</code>"
         if links:
-            row += " — " + " | ".join(links)
+            row += " — " + ", ".join(links)
         return row
     elif r.error:
         return f"❌ <code>{escape(r.code)}</code>:\n<code>{escape(r.error[:120])}<code>"
